@@ -1,0 +1,159 @@
+#!/bin/bash
+
+# source the common_routines.sh script which should be in the same directory
+mydir=$(dirname $0)
+test -r $mydir/common_routines.sh || {
+        echo "ERROR: $(basename $0): can't find expected $mydir/common_routines.sh. Exiting"
+        exit 1
+}
+source $mydir/common_routines.sh
+
+usage () {
+	local rc=${1:-1}
+
+	cat <<-EOF
+	$myname (C) 2017 Simon J Mudd <sjmudd@pobox.com>
+
+	Script to manage mysqld for vitess.
+	Usage: $myname [options] <start|stop|status|restart> <instance_id>
+
+	options:
+	-h help message
+	-v verbose logging
+	EOF
+
+	exit $rc
+}
+
+# Start vtgate.
+start () {
+	local pid
+
+	msg_info "Starting vtgate..."
+
+	$sudo_exec \
+	$VTROOT/bin/vtgate \
+                $TOPOLOGY_FLAGS \
+                -log_dir $VTDATAROOT/tmp \
+		-port $WEB_PORT \
+		-grpc_port $GRPC_PORT \
+		-grpc_max_message_size $GRPC_MAX_MESSAGE_SIZE \
+		-mysql_server_port $MYSQL_PORT \
+		-mysql_auth_server_static_string '{"mysql_user":[{"Password":"mysql_password"}]}' \
+		-cell $CELL \
+		-cells_to_watch $CELL \
+		-tablet_types_to_wait $TABLET_TYPES_TO_WAIT \
+		-gateway_implementation discoverygateway \
+		-service_map grpc-vtgateservice \
+		-pid_file $PIDFILE \
+	> $VTDATAROOT/tmp/vtgate.out 2>&1 &
+
+	pid=$!
+	if ps -p $pid >/dev/null 2>&1; then
+		msg_info "vtgate started with pid $pid and listening on port $MYSQL_PORT"
+		msg_info "Access vtgate at http://$HOSTNAME:$WEB_PORT/debug/status"
+		msg_info "Note: vtgate writes logs under $VTDATAROOT/tmp."
+		disown -a
+	else
+		msg_fatal "vtgate did not start correctly! Check logs."
+	fi
+}
+
+status () {
+	check_status vtgate $PIDFILE
+}
+
+# stop vtgate
+stop () {
+	local pid
+
+        echo "Stopping vtgate $UNIQUE_ID ($myhostname) for cell $CELL..."
+        if test -e $PIDFILE; then
+                pid=`cat $PIDFILE`
+                $sudo_kill $pid
+
+                while ps -p $pid > /dev/null; do sleep 1; done
+        else
+                msg_info "No pid file at $myhostname:$PIDFILE so assuming vtgate not running"
+        fi
+}
+
+###
+# start here
+###
+
+verbose=
+while getopts vh flag; do
+	case $flag in
+	v) verbose=1;;
+	h) usage 0;;
+	esac
+done
+shift $(($OPTIND - 1))
+
+if [ $# != 2 ]; then
+	usage 1
+fi
+
+ACTION=$1
+if [ -z "$ACTION" ]; then
+	usage 1
+fi
+
+UNIQUE_ID=$2
+if [ -z "$UNIQUE_ID" ]; then
+	usage 1
+fi
+
+# find the instance's hostname and see if it's mine
+h=$(vtgate_hostname_from_id $UNIQUE_ID)
+if [ -z "$h" ]; then
+	msg_fatal "Can not find hostname for id $UNIQUE_ID"
+fi
+
+if [ "$h" != "$(hostname)" ]; then
+	copy_files $h
+
+	# pass on verbose option if set
+	if [ -n "$verbose" ]; then
+		opt_verbose=-v
+	else
+		opt_verbose=
+	fi
+
+	msg_verbose "Running $h:$myname $UNIQUE_ID"
+	ssh $h ./$myname $opt_verbose $ACTION $UNIQUE_ID ||\
+		msg_fatal "Failed to run $h:$myname"
+
+	exit $?
+	# should never get here!
+fi
+
+# msg_info "Running $myname $UNIQUE_ID locally"
+
+mkdir -p ${VTDATAROOT}/tmp
+
+MYSQL_PORT=$(vtgate_mysql_port_from_id $UNIQUE_ID)
+WEB_PORT=$(vtgate_web_port_from_id $UNIQUE_ID)
+GRPC_PORT=$(vtgate_grpc_port_from_id $UNIQUE_ID)
+VITESS_USER=$(vtgate_user_from_id $UNIQUE_ID)
+CELL=$(vtgate_cell_from_id $UNIQUE_ID)
+TABLET_TYPES_TO_WAIT=$(vtgate_tablet_types_to_wait_from_id $UNIQUE_ID)
+PIDFILE=$VTDATAROOT/tmp/vtgate.pid
+
+if [ "$USER" != "$VITESS_USER" ]; then
+	sudo_exec="sudo -E -u $VITESS_USER"
+	sudo_kill="sudo -E -u $VITESS_USER kill"
+else
+	sudo_exec=
+	sudo_kill=kill
+fi
+
+# now do the real work
+case $ACTION in
+start)          start;;
+stop)           stop;;
+status)         status;;
+restart)        stop && start;;
+*)              usage 1;;
+esac

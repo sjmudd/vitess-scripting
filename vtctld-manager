@@ -1,0 +1,138 @@
+#!/bin/bash
+#
+# Manage vtctld process(es)
+#
+
+# source the common_routines.sh script which should be in the same directory
+mydir=$(dirname $0)
+test -r $mydir/common_routines.sh || {
+	echo "ERROR: $(basename $0): can't find expected $mydir/common_routines.sh. Exiting"
+	exit 1
+}
+source $mydir/common_routines.sh
+
+usage () {
+	local rc=${1:-1}
+
+	cat <<-EOF
+	$myname (C) 2017 Simon J Mudd <sjmudd@pobox.com>
+
+	Script to manage vtctld for vitess.
+	Usage: $myname [options] <start|stop|status|restart> <instance_id>
+	
+	options:
+	-h help message
+	-v verbose logging
+	EOF
+
+	exit $rc
+}
+
+start () {
+	echo "Starting vtctld..."
+
+	mkdir -p $VTDATAROOT/backups
+	mkdir -p $VTDATAROOT/tmp
+
+	$sudo_exec \
+	${VTROOT}/bin/vtctld \
+		${TOPOLOGY_FLAGS} \
+		-cell ${CELL} \
+		-web_dir ${VTTOP}/web/vtctld \
+		-web_dir2 ${VTTOP}/web/vtctld2/app \
+		-workflow_manager_init \
+		-workflow_manager_use_election \
+		-service_map 'grpc-vtctl' \
+		-backup_storage_implementation file \
+		-file_backup_storage_root ${VTDATAROOT}/backups \
+		-log_dir ${VTDATAROOT}/tmp \
+		-port ${WEB_PORT} \
+		-grpc_port ${GRPC_PORT} \
+		-pid_file $PIDFILE \
+		>> ${VTDATAROOT}/tmp/vtctld.out 2>&1 &
+
+	disown -a
+
+	msg_info "Access vtctld web UI at http://${HOSTNAME}:${WEB_PORT}"
+	msg_info "Send commands with: vtctlclient -server ${HOSTNAME}:${GRPC_PORT} ..."
+	msg_info "Note: vtctld writes logs under $VTDATAROOT/tmp."
+}
+
+stop () {
+	stop_by_pidfile vtctld $PIDFILE
+}
+
+status () {
+        check_status vtctld $PIDFILE
+}
+
+###
+# start here
+###
+
+verbose=
+while getopts vh flag; do
+	case $flag in
+	v) verbose=1;;
+	h) usage 0;;
+	esac
+done
+shift $(($OPTIND - 1))
+
+if [ $# != 2 ]; then
+	usage 1
+fi
+
+ACTION=$1
+if [ -z "$ACTION" ]; then
+	usage 1
+fi
+
+UNIQUE_ID=$2
+if [ -z "$UNIQUE_ID" ]; then
+	usage 1
+fi
+
+# find the instance's hostname and see if it's mine
+h=$(vtctld_hostname_from_id $UNIQUE_ID)
+if [ -z "$h" ]; then
+	msg_fatal "No could not find a hostname from id $UNIQUE_ID"
+fi
+if [ "$h" != "$(hostname)" ]; then
+	copy_files $h
+
+	msg_verbose "Running $h:$myname $UNIQUE_ID"
+	ssh $h ./$myname $ACTION $UNIQUE_ID ||\
+		msg_fatal "Failed to run $h:$myname"
+
+	exit $?
+	# should never get here!
+fi
+
+msg_verbose "Running $myname $UNIQUE_ID locally"
+
+mkdir -p ${VTDATAROOT}/tmp
+mkdir -p ${VTDATAROOT}/backups
+
+WEB_PORT=$(vtctld_web_port_from_id $UNIQUE_ID)
+GRPC_PORT=$(vtctld_grpc_port_from_id $UNIQUE_ID)
+CELL=$(vtctld_cell_from_id $UNIQUE_ID)
+VITESS_USER=$(vtctld_user_from_id $UNIQUE_ID)
+PIDFILE=$VTDATAROOT/tmp/vtctld.pid
+
+if [ "$USER" != "$VITESS_USER" ]; then
+	sudo_exec="sudo -E -u $VITESS_USER"
+	sudo_kill="sudo -E -u $VITESS_USER kill"
+else
+	sudo_exec=
+	sudo_kill=kill
+fi
+
+# now do the real work
+case $ACTION in
+start)          start;;
+stop)           stop;;
+status)         status;;
+restart)        stop && start;;
+*)              usage 1;;
+esac

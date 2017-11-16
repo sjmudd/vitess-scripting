@@ -1,0 +1,157 @@
+#!/bin/bash
+
+mydir=$(dirname $0)
+test -r $mydir/common_routines.sh || {
+	echo "ERROR: $(basename $0): can't find expected $mydir/common_routines.sh. Exiting"
+	exit 1
+}
+source $mydir/common_routines.sh
+
+usage () {
+	local rc=${1:-1}
+
+	cat <<-EOF
+	$myname (C) 2017 Simon J Mudd <sjmudd@pobox.com>
+
+	Script to manage vttablet for vitess.
+	Usage: $myname [options] <start|stop|status|restart> <instance_id>
+
+	options:
+	-h help message
+	-v verbose logging
+	EOF
+
+	exit $rc
+}
+
+# start vttablet
+start () {
+      	# get needed credentials
+	read_credential_config $UNIQUE_ID
+
+	echo "Starting vttablet for $ALIAS..."
+
+	$sudo_exec \
+	$VTROOT/bin/vttablet \
+		$TOPOLOGY_FLAGS \
+		-log_dir $VTDATAROOT/tmp \
+		-tablet-path $ALIAS \
+		-tablet_hostname "$HOSTNAME" \
+		-init_keyspace $KEYSPACE \
+		-init_shard $SHARD \
+		-init_tablet_type $TABLET_TYPE \
+		-init_db_name_override $DBNAME \
+		-mycnf_mysql_port $MYSQL_PORT \
+		-health_check_interval 5s \
+		-enable_semi_sync \
+		-enable_replication_reporter \
+		-heartbeat_enable \
+		-backup_storage_implementation file \
+		-file_backup_storage_root $VTDATAROOT/backups \
+		-restore_from_backup \
+		-binlog_use_v3_resharding_mode \
+		-port $WEB_PORT \
+		-enforce_strict_trans_tables=false \
+		-grpc_port $GRPC_PORT \
+		-grpc_max_message_size $GRPC_MAX_MESSAGE_SIZE \
+		-service_map 'grpc-queryservice,grpc-tabletmanager,grpc-updatestream' \
+		-pid_file $PIDFILE \
+		-vtctld_addr http://${VTCTLD_HOST}:${VTCTLD_WEB_PORT}/ \
+		$DBCONFIG_FLAGS \
+		> $VTDATAROOT/$TABLET_DIR/vttablet.out 2>&1 &
+
+	echo "Access tablet $ALIAS at http://$HOSTNAME:$WEB_PORT/debug/status"
+	disown -a
+}
+
+stop () {
+	echo "Stopping vttablet for $ALIAS..."
+	stop_by_pidfile vttablet $PIDFILE
+}
+
+status () {
+	check_status vttablet $PIDFILE
+}
+
+###
+# start here
+###
+
+verbose=
+while getopts vh flag; do
+	case $flag in
+	v) verbose=1;;
+	h) usage 0;;
+	esac
+done
+shift $(($OPTIND - 1))
+
+if [ $# != 2 ]; then
+	usage 1
+fi
+
+ACTION=$1
+if [ -z "$ACTION" ]; then
+	usage 1
+fi
+
+UNIQUE_ID=$2
+if [ -z "$UNIQUE_ID" ]; then
+	usage 1
+fi
+
+# find the instance's hostname and see if it's mine
+h=$(hostname_from_id $UNIQUE_ID)
+if [ -z "$h" ]; then
+	msg_fatal "Could not find a hostname from id $UNIQUE_ID"
+fi
+if [ "$h" != "$(hostname)" ]; then
+	copy_files $h
+
+	msg_verbose "Running $h:$myname $UNIQUE_ID"
+	ssh $h ./$myname $ACTION $UNIQUE_ID ||\
+		msg_fatal "Failed to run $h:$myname"
+
+	exit $?
+	# should never get here!
+fi
+
+msg_verbose "Running $myname $UNIQUE_ID locally"
+
+mkdir -p ${VTDATAROOT}/tmp
+mkdir -p ${VTDATAROOT}/backups
+
+DBNAME=$(keyspace_from_id $UNIQUE_ID)
+KEYSPACE=$DBNAME
+
+TABLET_DIR=$(printf "vt_%010d" $UNIQUE_ID)
+MYSQL_PORT=$(mysql_port_from_id $UNIQUE_ID)
+WEB_PORT=$(web_port_from_id $UNIQUE_ID)
+GRPC_PORT=$(grpc_port_from_id $UNIQUE_ID)
+ALIAS=$(alias_from_id $UNIQUE_ID)
+SHARD=$(shard_from_id $UNIQUE_ID)
+VITESS_USER=$(user_from_id $UNIQUE_ID)
+
+CELL=$(cell_from_id $UNIQUE_ID)
+VTCTLD_HOST=$(vtctld_host_from_cell $CELL)
+VTCTLD_WEB_PORT=$(vtctld_web_port_from_cell $CELL)
+
+TABLET_TYPE=replica
+PIDFILE=$VTDATAROOT/$TABLET_DIR/vttablet.pid
+
+if [ "$USER" != "$VITESS_USER" ]; then
+	sudo_exec="sudo -E -u $VITESS_USER"
+	sudo_kill="sudo -E -u $VITESS_USER kill"
+else
+	sudo_exec=
+	sudo_kill=kill
+fi
+
+# now do the real work
+case $ACTION in
+start)          start;;
+stop)           stop;;
+status)         status;;
+restart)        stop && start;;
+*)              usage 1;;
+esac
