@@ -8,23 +8,6 @@ test -r $mydir/common_routines.sh || {
 }
 source $mydir/common_routines.sh
 
-usage () {
-	local rc=${1:-1}
-
-	cat <<-EOF
-	$myname (C) 2017 Simon J Mudd <sjmudd@pobox.com>
-
-	Script to manage mysqld for vitess.
-	Usage: $myname [options] <start|stop|status|restart> <instance_id>
-
-	options:
-	-h help message
-	-v verbose logging
-	EOF
-
-	exit $rc
-}
-
 # Start vtgate.
 start () {
 	local pid
@@ -86,23 +69,22 @@ verbose=
 while getopts vh flag; do
 	case $flag in
 	v) verbose=1;;
-	h) usage 0;;
+	h) usage vtgate 0;;
 	esac
 done
 shift $(($OPTIND - 1))
 
 if [ $# != 2 ]; then
-	usage 1
+	usage vtgate 1
 fi
 
 ACTION=$1
-if [ -z "$ACTION" ]; then
-	usage 1
-fi
+check_action "$ACTION" ||\
+	usage vtgate 1
 
 UNIQUE_ID=$2
 if [ -z "$UNIQUE_ID" ]; then
-	usage 1
+	usage vtgate 1
 fi
 
 # find the instance's hostname and see if it's mine
@@ -122,9 +104,7 @@ if [ "$h" != "$(hostname)" ]; then
 	fi
 
 	msg_verbose "Running $h:$myname $UNIQUE_ID"
-	ssh $h ./$myname $opt_verbose $ACTION $UNIQUE_ID ||\
-		msg_fatal "Failed to run $h:$myname"
-
+	ssh $h ./$myname $opt_verbose $ACTION $UNIQUE_ID
 	exit $?
 	# should never get here!
 fi
@@ -155,5 +135,4 @@ start)          start;;
 stop)           stop;;
 status)         status;;
 restart)        stop && start;;
-*)              usage 1;;
 esac

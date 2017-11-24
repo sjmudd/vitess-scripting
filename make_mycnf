@@ -1,0 +1,47 @@
+#!/bin/sh
+#
+# Hook for making a my.cnf file.  Currently very basic.
+#
+# Any environment variable exported to mysqlctl will be visible to the
+# hook so set these as needed.
+#
+# See: https://github.com/youtube/vitess/issues/3405
+#
+# so currently testing and setting the values as shown here.
+#
+myname=$(basename $0)
+myhostname=$(hostname -s)
+
+msg_info () {
+	echo "$(date +'%b %d %H:%M:%S') $myhostname $myname[$$]: $@"
+}
+
+msg_verbose () {
+	[ -n "$verbose" ] || return
+	msg_info "$@"
+}
+
+msg_fatal () {
+	msg_info "FATAL: $*"
+
+	exit 1
+}
+
+# check that the expected values are provided:
+test -n "$VTDATAROOT" || msg_fatal "no value found for VTDATAROOT"
+test -n "$VITESS_CELL" || msg_fatal "no value found for VITESS_CELL"
+test -n "$VITESS_KEYSPACE" || msg_fatal "no value found for VITESS_KEYSPACE"
+test -n "$VITESS_SHARD" || msg_fatal "no value found for VITESS_SHARD"
+test -n "$VITESS_UNIQUE_ID" || msg_fatal "no value found for VITESS_UNIQUE_ID"
+
+_vtprefix=$(printf "vt-%010d" $VITESS_UNIQUE_ID)
+TABLET_DIR=$(printf "vt_%010d" $VITESS_UNIQUE_ID)
+_server_id=$((100 + $RANDOM))  # we need to fix this better later.
+
+echo "# Written by $myname at $(date)"
+
+# write to stdout
+sed  -e "s/{{.vtdir}}/${TABLET_DIR}/" \
+	-e "s/{{.vtfileprefix}}/${_vtprefix}/" \
+	-e "s/{{.serverid}}/${_server_id}/" \
+	my.cnf.generic

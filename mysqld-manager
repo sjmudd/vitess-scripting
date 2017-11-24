@@ -7,41 +7,31 @@ test -r $mydir/common_routines.sh || {
 	exit 1
 }
 source $mydir/common_routines.sh
-
-usage () {
-	local rc=${1:-1}
-
-	cat <<-EOF
-	$myname (C) 2017 Simon J Mudd <sjmudd@pobox.com>
-
-	Script to manage mysqld for vitess.
-	Usage: $myname [options] <start|stop|status|restart> <instance_id>
-
-	options:
-	-h help message
-	-v verbose logging
-	EOF
-
-	exit $rc
-}
+process=mysqld
 
 # startup mysqld
 start () {
 	local action
 
-	mkdir -p ${VTDATAROOT}/tmp
-	mkdir -p ${VTDATAROOT}/backups
+	local _vtprefix
+	local _server_id
 
 	# get needed credentials
 	read_credential_config $UNIQUE_ID
 
-	echo "Starting MySQL for tablet $ALIAS..."
+	# Export these values so that mysqlctl and the make_mycnf hook can pick them up
+	export VITESS_CELL=$(cell_from_id $UNIQUE_ID)
+	export VITESS_KEYSPACE
+	export VITESS_SHARD
+	export VITESS_UNIQUE_ID=$UNIQUE_ID
+
+	msg_info "Starting $process for tablet $ALIAS..."
 	action="init -init_db_sql_file $INIT_DB_SQL_FILE"
 
 	if [ -d $VTDATAROOT/$TABLET_DIR ]; then
-	    echo "Resuming from existing vttablet dir:"
-	    echo "    $VTDATAROOT/$TABLET_DIR"
-	    action='start'
+		msg_info "Resuming from existing vttablet dir:"
+		msg_info "    $VTDATAROOT/$TABLET_DIR"
+		action='start'
 	fi
 
 	$sudo_exec \
@@ -52,12 +42,12 @@ start () {
 	    -mysql_port $MYSQL_PORT \
 	    $action &
 
-	# Wait for 'mysqlctl to start mysqld'
+	# Wait for 'mysqlctl to start $process'
 	wait
 }
 
 stop () {
-	echo "Stopping MySQL for tablet $ALIAS..."
+	msg_info "Stopping $process for tablet $ALIAS..."
 	$sudo_exec \
 	$VTROOT/bin/mysqlctl \
 		-db-config-dba-uname vt_dba \
@@ -71,7 +61,65 @@ stop () {
 # check the status.
 # - Look for the directory where mysqld is supposed to be running
 status () {
-	check_status mysqld $PIDFILE
+	check_status $process $PIDFILE
+}
+
+process_instance () {
+	local UNIQUE_ID=$1
+	local h
+	local opt_v
+
+	[ -n "$verbose" ] && opt_v=-v
+
+	# find the instance's hostname and see if it's mine
+	h=$(hostname_from_id $UNIQUE_ID)
+	if [ -z "$h" ]; then
+		msg_fatal "Can not find hostname for id $UNIQUE_ID"
+	fi
+
+	if [ "$h" != "$(hostname)" ]; then
+		copy_files $h
+
+		msg_verbose "Running $h:$myname $UNIQUE_ID"
+		ssh $h ./$myname ${opt_v} $ACTION $UNIQUE_ID
+		return $?
+		# should never get here!
+	fi
+
+	msg_verbose "Running $myname $UNIQUE_ID locally"
+
+	DBNAME=$(keyspace_from_id $UNIQUE_ID)
+	VITESS_KEYSPACE=$DBNAME
+
+	TABLET_DIR=$(printf "vt_%010d" $UNIQUE_ID)
+	MYSQL_PORT=$(mysql_port_from_id $UNIQUE_ID)
+	WEB_PORT=$(web_port_from_id $UNIQUE_ID)
+	GRPC_PORT=$(grpc_port_from_id $UNIQUE_ID)
+	ALIAS=$(alias_from_id $UNIQUE_ID)
+	VITESS_SHARD=$(shard_from_id $UNIQUE_ID)
+	MYSQLD_USER=$(mysqld_user_from_id $UNIQUE_ID)
+	TABLET_TYPE=replica
+	PIDFILE=$VTDATAROOT/$TABLET_DIR/mysql.pid
+
+	if [ "$USER" != "$MYSQLD_USER" ]; then
+		sudo_exec="sudo -E -u $MYSQLD_USER"
+		sudo_kill="sudo -E -u $MYSQLD_USER kill"
+	else
+		sudo_exec=
+		sudo_kill=kill
+	fi
+
+	for dir in ${VTDATAROOT}/tmp ${VTDATAROOT}/backups; do
+		sudo_mkdir_if_missing $dir
+	done
+
+	# now do the real work
+	case $ACTION in
+	start)		start;;
+	stop)		stop;;
+	status) 	status;;
+	restart)	stop && start;;
+	esac
 }
 
 ###
@@ -82,73 +130,23 @@ verbose=
 while getopts vh flag; do
 	case $flag in
 	v) verbose=1;;
-	h) usage 0;;
+	h) usage $process 0;;
 	esac
 done
 shift $(($OPTIND - 1))
 
-if [ $# != 2 ]; then
-	usage 1
+if [ $# -lt 2 ]; then
+	usage $process 1
 fi
 
 ACTION=$1
-if [ -z "$ACTION" ]; then
-	usage 1
-fi
+check_action "$ACTION" ||\
+	usage $process 1
 
-UNIQUE_ID=$2
-if [ -z "$UNIQUE_ID" ]; then
-	usage 1
-fi
+shift
 
-# find the instance's hostname and see if it's mine
-h=$(hostname_from_id $UNIQUE_ID)
-if [ -z "$h" ]; then
-	msg_fatal "Can not find hostname for id $UNIQUE_ID"
-fi
-
-if [ "$h" != "$(hostname)" ]; then
-	copy_files $h
-
-	msg_verbose "Running $h:$myname $UNIQUE_ID"
-	ssh $h ./$myname $ACTION $UNIQUE_ID ||\
-		msg_fatal "Failed to run $h:$myname"
-
-	exit $?
-	# should never get here!
-fi
-
-msg_verbose "Running $myname $UNIQUE_ID locally"
-
-mkdir -p ${VTDATAROOT}/tmp
-mkdir -p ${VTDATAROOT}/backups
-
-DBNAME=$(keyspace_from_id $UNIQUE_ID)
-KEYSPACE=$DBNAME
-
-TABLET_DIR=$(printf "vt_%010d" $UNIQUE_ID)
-MYSQL_PORT=$(mysql_port_from_id $UNIQUE_ID)
-WEB_PORT=$(web_port_from_id $UNIQUE_ID)
-GRPC_PORT=$(grpc_port_from_id $UNIQUE_ID)
-ALIAS=$(alias_from_id $UNIQUE_ID)
-SHARD=$(shard_from_id $UNIQUE_ID)
-VITESS_USER=$(user_from_id $UNIQUE_ID)
-TABLET_TYPE=replica
-PIDFILE=$VTDATAROOT/$TABLET_DIR/mysql.pid
-
-if [ "$USER" != "$VITESS_USER" ]; then
-	sudo_exec="sudo -E -u $VITESS_USER"
-	sudo_kill="sudo -E -u $VITESS_USER kill"
-else
-	sudo_exec=
-	sudo_kill=kill
-fi
-
-# now do the real work
-case $ACTION in
-start)		start;;
-stop)		stop;;
-status) 	status;;
-restart)	stop && start;;
-*)		usage 1;;
-esac
+# iterate over each instance
+while [ $# != 0 ]; do
+	process_instance $1
+	shift
+done

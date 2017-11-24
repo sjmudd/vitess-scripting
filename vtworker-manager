@@ -11,23 +11,6 @@ test -r $mydir/common_routines.sh || {
 }
 source $mydir/common_routines.sh
 
-usage () {
-	local rc=${1:-1}
-
-	cat <<-EOF
-	$myname (C) 2017 Simon J Mudd <sjmudd@pobox.com>
-
-	Script to manage vtworker for vitess.
-	Usage: $myname [options] <start|stop|status|restart> <instance_id>
-
-	options:
-	-h help message
-	-v verbose logging
-	EOF
-
-	exit $rc
-}
-
 start () {
 	echo "Starting vtworker..."
 
@@ -65,31 +48,31 @@ status () {
 hostname_from_id () {
 	local id="$1"
 
-	awk -v id=$id '{ if ($1 == id) print $2 }' $vtworker_config_file
+	awk -v id=$id '{ if ($1 == id) print $2 }' $vtworker_conf
 }
 
 cell_from_id () {
 	local id="$1"
 
-	awk -v id=$id '{ if ($1 == id) print $3 }' $vtworker_config_file
+	awk -v id=$id '{ if ($1 == id) print $3 }' $vtworker_conf
 }
 
 web_port_from_id () {
 	local id="$1"
 
-	awk -v id=$id '{ if ($1 == id) print $4 }' $vtworker_config_file
+	awk -v id=$id '{ if ($1 == id) print $4 }' $vtworker_conf
 }
 
 grpc_port_from_id () {
 	local id="$1"
 
-	awk -v id=$id '{ if ($1 == id) print $5 }' $vtworker_config_file
+	awk -v id=$id '{ if ($1 == id) print $5 }' $vtworker_conf
 }
 
 user_from_id () {
 	local id="$1"
 
-	awk -v id=$id '{ if ($1 == id) print $6 }' $vtworker_config_file
+	awk -v id=$id '{ if ($1 == id) print $6 }' $vtworker_conf
 }
 
 ###
@@ -100,23 +83,22 @@ verbose=
 while getopts vh flag; do
 	case $flag in
 	v) verbose=1;;
-	h) usage 0;;
+	h) usage vtworker 0;;
 	esac
 done
 shift $(($OPTIND - 1))
 
 if [ $# != 2 ]; then
-	usage 1
+	usag vtworkere 1
 fi
 
 ACTION=$1
-if [ -z "$ACTION" ]; then
-	usage 1
-fi
+check_action "$ACTION" ||\
+	usage vtworker 1
 
 UNIQUE_ID=$2
 if [ -z "$UNIQUE_ID" ]; then
-	usage 1
+	usage vtworker 1
 fi
 
 # find the instance's hostname and see if it's mine
@@ -160,5 +142,4 @@ start)          start;;
 stop)           stop;;
 status)         status;;
 restart)        stop && start;;
-*)              usage 1;;
 esac

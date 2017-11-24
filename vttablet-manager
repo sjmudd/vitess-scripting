@@ -6,30 +6,14 @@ test -r $mydir/common_routines.sh || {
 	exit 1
 }
 source $mydir/common_routines.sh
-
-usage () {
-	local rc=${1:-1}
-
-	cat <<-EOF
-	$myname (C) 2017 Simon J Mudd <sjmudd@pobox.com>
-
-	Script to manage vttablet for vitess.
-	Usage: $myname [options] <start|stop|status|restart> <instance_id>
-
-	options:
-	-h help message
-	-v verbose logging
-	EOF
-
-	exit $rc
-}
+process=vttablet
 
 # start vttablet
 start () {
       	# get needed credentials
 	read_credential_config $UNIQUE_ID
 
-	echo "Starting vttablet for $ALIAS..."
+	echo "Starting $process for $ALIAS..."
 
 	$sudo_exec \
 	$VTROOT/bin/vttablet \
@@ -45,10 +29,8 @@ start () {
 		-health_check_interval 5s \
 		-enable_semi_sync \
 		-enable_replication_reporter \
-		-heartbeat_enable \
-		-backup_storage_implementation file \
-		-file_backup_storage_root $VTDATAROOT/backups \
-		-restore_from_backup \
+		$enable_heartbeat \
+		$backup_config \
 		-binlog_use_v3_resharding_mode \
 		-port $WEB_PORT \
 		-enforce_strict_trans_tables=false \
@@ -60,17 +42,103 @@ start () {
 		$DBCONFIG_FLAGS \
 		> $VTDATAROOT/$TABLET_DIR/vttablet.out 2>&1 &
 
-	echo "Access tablet $ALIAS at http://$HOSTNAME:$WEB_PORT/debug/status"
+	pid=$!
+	if ps -p $pid >/dev/null 2>&1; then
+		msg_info "vttablet started [pid: $pid]"
+		echo "Access tablet $ALIAS at http://$HOSTNAME:$WEB_PORT/debug/status"
+	else
+		msg_fatal "vttablet failed to start, pid $pid not found"
+	fi
+
 	disown -a
 }
 
 stop () {
 	echo "Stopping vttablet for $ALIAS..."
-	stop_by_pidfile vttablet $PIDFILE
+	stop_by_pidfile $process $PIDFILE
 }
 
 status () {
-	check_status vttablet $PIDFILE
+	check_status $process $PIDFILE
+}
+
+process_instance () {
+	local UNIQUE_ID=$1
+	local h
+
+	if [ -z "$UNIQUE_ID" ]; then
+		usage $process 1
+	fi
+
+	# find the instance's hostname and see if it's mine
+	h=$(hostname_from_id $UNIQUE_ID)
+	if [ -z "$h" ]; then
+		msg_fatal "Could not find a hostname from id $UNIQUE_ID"
+	fi
+	if [ "$h" != "$(hostname)" ]; then
+		copy_files $h
+
+		msg_verbose "Running $h:$myname $UNIQUE_ID"
+		ssh $h ./$myname $ACTION $UNIQUE_ID
+		return $?
+		# should never get here!
+	fi
+
+	msg_verbose "Running $myname $UNIQUE_ID locally"
+
+	DBNAME=$(keyspace_from_id $UNIQUE_ID)
+	KEYSPACE=$DBNAME
+
+	TABLET_DIR=$(printf "vt_%010d" $UNIQUE_ID)
+	MYSQL_PORT=$(mysql_port_from_id $UNIQUE_ID)
+	WEB_PORT=$(web_port_from_id $UNIQUE_ID)
+	GRPC_PORT=$(grpc_port_from_id $UNIQUE_ID)
+	ALIAS=$(alias_from_id $UNIQUE_ID)
+	SHARD=$(shard_from_id $UNIQUE_ID)
+	VTTABLET_USER=$(vttablet_user_from_id $UNIQUE_ID)
+	# lower case the values just in case
+	ADD_BACKUP_CONFIG=$(get_backup_config $UNIQUE_ID | tr A-Z a-z)
+	ADD_HEARTBEAT_CONFIG=$(configure_heartbeat_from_id $UNIQUE_ID | tr A-Z a-z)
+
+	CELL=$(cell_from_id $UNIQUE_ID)
+	VTCTLD_FIRST_ID=$(vtctld_first_id_from_cell $CELL)
+	VTCTLD_HOST=$(vtctld_hostname_from_id $VTCTLD_FIRST_ID)
+	VTCTLD_WEB_PORT=$(vtctld_web_port_from_id $VTCTLD_FIRST_ID)
+
+	TABLET_TYPE=replica
+	PIDFILE=$VTDATAROOT/$TABLET_DIR/vttablet.pid
+
+	BACKUP_CONFIG=
+	if [ "$ADD_BACKUP_CONFIG" = yes ]; then
+		BACKUP_CONFIG="
+			-backup_storage_implementation file \
+	                -file_backup_storage_root $VTDATAROOT/backups \
+	                -restore_from_backup"
+	fi
+	enable_heartbeat=
+	if [ "$ADD_HEARTBEAT_CONFIG" = yes ]; then
+		enable_heartbeat="-heartbeat_enable"
+	fi
+
+	if [ "$USER" != "$VTTABLET_USER" ]; then
+		sudo_exec="sudo -E -u $VTTABLET_USER"
+		sudo_kill="sudo -E -u $VTTABLET_USER kill"
+	else
+		sudo_exec=
+		sudo_kill=kill
+	fi
+
+	for dir in ${VTDATAROOT}/tmp ${VTDATAROOT}/backups; do
+		sudo_mkdir_if_missing $dir
+	done
+
+	# now do the real work
+	case $ACTION in
+	start)		start;;
+	stop)		stop;;
+	status)		status;;
+	restart)	stop && start;;
+	esac
 }
 
 ###
@@ -81,77 +149,23 @@ verbose=
 while getopts vh flag; do
 	case $flag in
 	v) verbose=1;;
-	h) usage 0;;
+	h) usage $process 0;;
 	esac
 done
 shift $(($OPTIND - 1))
 
-if [ $# != 2 ]; then
-	usage 1
+if [ $# -lt 2 ]; then
+	usage $process 1
 fi
 
 ACTION=$1
-if [ -z "$ACTION" ]; then
-	usage 1
-fi
+check_action "$ACTION" ||\
+	usage $process 1
 
-UNIQUE_ID=$2
-if [ -z "$UNIQUE_ID" ]; then
-	usage 1
-fi
+shift
 
-# find the instance's hostname and see if it's mine
-h=$(hostname_from_id $UNIQUE_ID)
-if [ -z "$h" ]; then
-	msg_fatal "Could not find a hostname from id $UNIQUE_ID"
-fi
-if [ "$h" != "$(hostname)" ]; then
-	copy_files $h
-
-	msg_verbose "Running $h:$myname $UNIQUE_ID"
-	ssh $h ./$myname $ACTION $UNIQUE_ID ||\
-		msg_fatal "Failed to run $h:$myname"
-
-	exit $?
-	# should never get here!
-fi
-
-msg_verbose "Running $myname $UNIQUE_ID locally"
-
-mkdir -p ${VTDATAROOT}/tmp
-mkdir -p ${VTDATAROOT}/backups
-
-DBNAME=$(keyspace_from_id $UNIQUE_ID)
-KEYSPACE=$DBNAME
-
-TABLET_DIR=$(printf "vt_%010d" $UNIQUE_ID)
-MYSQL_PORT=$(mysql_port_from_id $UNIQUE_ID)
-WEB_PORT=$(web_port_from_id $UNIQUE_ID)
-GRPC_PORT=$(grpc_port_from_id $UNIQUE_ID)
-ALIAS=$(alias_from_id $UNIQUE_ID)
-SHARD=$(shard_from_id $UNIQUE_ID)
-VITESS_USER=$(user_from_id $UNIQUE_ID)
-
-CELL=$(cell_from_id $UNIQUE_ID)
-VTCTLD_HOST=$(vtctld_host_from_cell $CELL)
-VTCTLD_WEB_PORT=$(vtctld_web_port_from_cell $CELL)
-
-TABLET_TYPE=replica
-PIDFILE=$VTDATAROOT/$TABLET_DIR/vttablet.pid
-
-if [ "$USER" != "$VITESS_USER" ]; then
-	sudo_exec="sudo -E -u $VITESS_USER"
-	sudo_kill="sudo -E -u $VITESS_USER kill"
-else
-	sudo_exec=
-	sudo_kill=kill
-fi
-
-# now do the real work
-case $ACTION in
-start)          start;;
-stop)           stop;;
-status)         status;;
-restart)        stop && start;;
-*)              usage 1;;
-esac
+# iterate over each instance
+while [ $# != 0 ]; do
+	process_instance $1
+	shift
+done

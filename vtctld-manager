@@ -11,23 +11,6 @@ test -r $mydir/common_routines.sh || {
 }
 source $mydir/common_routines.sh
 
-usage () {
-	local rc=${1:-1}
-
-	cat <<-EOF
-	$myname (C) 2017 Simon J Mudd <sjmudd@pobox.com>
-
-	Script to manage vtctld for vitess.
-	Usage: $myname [options] <start|stop|status|restart> <instance_id>
-	
-	options:
-	-h help message
-	-v verbose logging
-	EOF
-
-	exit $rc
-}
-
 start () {
 	echo "Starting vtctld..."
 
@@ -37,6 +20,7 @@ start () {
 	$sudo_exec \
 	${VTROOT}/bin/vtctld \
 		${TOPOLOGY_FLAGS} \
+		-alsologtostderr \
 		-cell ${CELL} \
 		-web_dir ${VTTOP}/web/vtctld \
 		-web_dir2 ${VTTOP}/web/vtctld2/app \
@@ -74,23 +58,22 @@ verbose=
 while getopts vh flag; do
 	case $flag in
 	v) verbose=1;;
-	h) usage 0;;
+	h) usage vtctld 0;;
 	esac
 done
 shift $(($OPTIND - 1))
 
 if [ $# != 2 ]; then
-	usage 1
+	usage vtctld 1
 fi
 
 ACTION=$1
-if [ -z "$ACTION" ]; then
-	usage 1
-fi
+check_action "$ACTION" ||\
+	usage vtctld 1
 
 UNIQUE_ID=$2
 if [ -z "$UNIQUE_ID" ]; then
-	usage 1
+	usage vtctld 1
 fi
 
 # find the instance's hostname and see if it's mine
@@ -134,5 +117,4 @@ start)          start;;
 stop)           stop;;
 status)         status;;
 restart)        stop && start;;
-*)              usage 1;;
 esac
