@@ -13,4 +13,4 @@ _FILTERED_FLAGS="-db-config-filtered-uname vt_filtered -db-config-filtered-pass 
 
 DBCONFIG_DBA_FLAGS=${_DBA_FLAGS}
 DBCONFIG_FLAGS="${_DBA_FLAGS} ${_ALL_PRIVS_FLAGS} ${_APP_FLAGS} ${_REPL_FLAGS} ${_FILTERED_FLAGS}"
-INIT_DB_SQL_FILE=/home/smudd/dev/vitess-deployment/config/init_db.sql
+INIT_DB_SQL_FILE=/path/to/init_db.sql
