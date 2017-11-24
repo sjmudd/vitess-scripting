@@ -1,16 +1,13 @@
 This repo holds routines for vitess to start / stop mysqld and vtgate.
 
-VERY MUCH WORK IN PROGRESS
+There is a manager script for each script intended to manage a binary
+and that script can stop, start, restart or check the status of one
+or ore proceses.
 
-The same scripts only start and stop and are in separate scripts.
-these use the same script to start/ stop / check status and restart
-the processes.
-
-I've added a config file with the location and config of each instance
-and that is used to manage it. If the instance is remote then the
-scripts will be copied to the remote location and run remotely thus
-avoiding me having to copy stuff about manually. (later we can do
-this better)
+Several configuration files exist to manage each specific vitess
+process.  If the instance is remote then the scripts will be copied
+using ssh to the remote location and run remotely thus avoiding me
+having to copy stuff about manually. (later we can do this better)
 
 Directory locations are broken in the sense they assume I built the
 vitess repo which is under ~simon/dev. That's not really correct
@@ -28,12 +25,16 @@ Things to fix:
   - mysqld:    done
   - vttablet:  done
   - vtgate:    done
-  - vtctld:    pending
+  - vtctld:    done
   - zookeeper: pending
 * build the my.cnf file via vthooks
-  - (but not sure how to get the specific instance info into the hook receiver)
+  - partially done. Needs to be more complete
 * script to see and check ALL running processes
+  - partially done
 * handling of mysqld when it's run "outside of the vitess setup"
+  - partially done
+* making logging and output standard for all processes and noisy
+  enought but not too noisy
 
 Example of using the stuff atm (output needs tidying up)
 
