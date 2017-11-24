@@ -13,37 +13,37 @@ source $mydir/common_routines.sh
 hostname_from_id () {
         local id="$1"
 
-        awk -v id=$id '{ if ($1 == id) print $2 }' $zk_config_file
+        awk -v id=$id '{ if ($1 == id) print $2 }' $zk_conf
 }
 
 ports_from_id () {
         local id="$1"
 
-        awk -v id=$id '{ if ($1 == id) print $2 }' $zk_config_file
+        awk -v id=$id '{ if ($1 == id) print $2 }' $zk_conf
 }
 
 style_from_id () {
         local id="$1"
 
-        awk -v id=$id '{ if ($1 == id) print $3 }' $zk_config_file
+        awk -v id=$id '{ if ($1 == id) print $3 }' $zk_conf
 }
 
 user_from_id () {
         local id="$1"
 
-        awk -v id=$id '{ if ($1 == id) print $4 }' $zk_config_file
+        awk -v id=$id '{ if ($1 == id) print $4 }' $zk_conf
 }
 
 # get the list of our ids from the config file
 get_ids () {
-        awk '{ if ($4 == "ours") print $1 }' $zk_config_file
+        awk '{ if ($4 == "ours") print $1 }' $zk_conf
 }
 
 usage () {
 	local rc=${1:-1}
 
 	cat <<-EOF
-	$myname (C) 2017 Simon J Mudd <sjmudd@pobox.com>
+	$myname (C) 2017 booking.com
 
 	Script to manage zookeeper instance for vitess.
 	Usage: $myname [options] <start|stop|status|restart> <instance_id>
@@ -141,11 +141,11 @@ if [ -z "$UNIQUE_ID" ]; then
 fi
 
 if [ "$UNIQUE_ID" = ALL -o "$UNIQUE_ID" = all ]; then
-	msg_info "Getting ids that match 'ours' in $zk_config_file"
+	msg_info "Getting ids that match 'ours' in $zk_conf"
 	ids=$(get_ids)
 
 	if [ -z "$ids" ]; then
-		msg_info "No 'ours' ids found in $zk_config_file. Doing nothing"
+		msg_info "No 'ours' ids found in $zk_conf. Doing nothing"
 		exit 0
 	fi
 	# clean up carriage returns
