@@ -247,7 +247,7 @@ copy_files () {
         (
 		[ -n "$verbose" ] && opt_v=v
 		set -e
-		rsync -a${opt_v} $mydir/common_routines.sh $zk_conf $vtgate_conf $vitess_conf $vtctld_conf $vtworker_conf $my_cnf_generic credentials.*.sh $host:
+		rsync -a${opt_v} $mydir/common_routines.sh $zk_conf $vtgate_conf $vitess_conf $vtctld_conf $vtworker_conf $my_cnf_generic $topology_conf credentials.*.sh $host:
 		rsync -a${opt_v} $make_mycnf $host:$VTROOT/vthook/
 		rsync -a${opt_v} $0 $host:$myname
 	) || msg_fatal "Copying files to $host"
