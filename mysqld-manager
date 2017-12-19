@@ -12,7 +12,6 @@ process=mysqld
 # startup mysqld
 start () {
 	local action
-
 	local _vtprefix
 	local _server_id
 
@@ -25,6 +24,9 @@ start () {
 	export VITESS_SHARD
 	export VITESS_UNIQUE_ID=$UNIQUE_ID
 
+	# create any missing directories
+	mkdir_if_missing ${VTDATAROOT}/tmp ${VTDATAROOT}/backups $VTDEPLOY
+
 	msg_info "Starting $process for tablet $ALIAS..."
 	action="init -init_db_sql_file $INIT_DB_SQL_FILE"
 
@@ -34,7 +36,7 @@ start () {
 		action='start'
 	fi
 
-	$sudo_exec \
+	# we now run this script as the end user so no need for sudo
 	$VTROOT/bin/mysqlctl \
 	    -log_dir $VTDATAROOT/tmp \
 	    -tablet_uid $UNIQUE_ID \
@@ -44,11 +46,14 @@ start () {
 
 	# Wait for 'mysqlctl to start $process'
 	wait
+
+	disown -a
 }
 
 stop () {
 	msg_info "Stopping $process for tablet $ALIAS..."
-	$sudo_exec \
+
+	# we now run this script as the end user so no need for sudo
 	$VTROOT/bin/mysqlctl \
 		-db-config-dba-uname vt_dba \
 		-tablet_uid $UNIQUE_ID \
@@ -77,11 +82,18 @@ process_instance () {
 		msg_fatal "Can not find hostname for id $UNIQUE_ID"
 	fi
 
+	MYSQLD_USER=$(mysqld_user_from_id $UNIQUE_ID)
+	[ -z "$MYSQLD_USER" ] && \
+		msg_fatal "Could not find a username from id $UNIQUE_ID"
+
+	# set the environment correctly from the hostname/process
+	set_environment_from_parameters $h $process $UNIQUE_ID
+
 	if [ "$h" != "$(hostname)" ]; then
-		copy_files $h
+		copy_files $h $MYSQLD_USER
 
 		msg_verbose "Running $h:$myname $UNIQUE_ID"
-		ssh $h ./$myname ${opt_v} $ACTION $UNIQUE_ID
+		ssh $h sudo -E -u $MYSQLD_USER $VTDEPLOY/$myname ${opt_v} $ACTION $UNIQUE_ID
 		return $?
 		# should never get here!
 	fi
@@ -97,21 +109,8 @@ process_instance () {
 	GRPC_PORT=$(grpc_port_from_id $UNIQUE_ID)
 	ALIAS=$(alias_from_id $UNIQUE_ID)
 	VITESS_SHARD=$(shard_from_id $UNIQUE_ID)
-	MYSQLD_USER=$(mysqld_user_from_id $UNIQUE_ID)
 	TABLET_TYPE=replica
 	PIDFILE=$VTDATAROOT/$TABLET_DIR/mysql.pid
-
-	if [ "$USER" != "$MYSQLD_USER" ]; then
-		sudo_exec="sudo -E -u $MYSQLD_USER"
-		sudo_kill="sudo -E -u $MYSQLD_USER kill"
-	else
-		sudo_exec=
-		sudo_kill=kill
-	fi
-
-	for dir in ${VTDATAROOT}/tmp ${VTDATAROOT}/backups; do
-		sudo_mkdir_if_missing $dir
-	done
 
 	# now do the real work
 	case $ACTION in

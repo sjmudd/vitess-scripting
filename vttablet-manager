@@ -13,9 +13,17 @@ start () {
       	# get needed credentials
 	read_credential_config $UNIQUE_ID
 
+	# create any missing directories
+	mkdir_if_missing ${VTDATAROOT}/tmp ${VTDATAROOT}/backups
+
+	# don't run if already running
+	if check_status $process $PIDFILE; then
+		msg_fatal "$process for $ALIAS is already running, not starting"
+	fi
+
 	echo "Starting $process for $ALIAS..."
 
-	$sudo_exec \
+	# we run as the local user so no problems with the .out file
 	$VTROOT/bin/vttablet \
 		$TOPOLOGY_FLAGS \
 		-log_dir $VTDATAROOT/tmp \
@@ -40,7 +48,7 @@ start () {
 		-pid_file $PIDFILE \
 		-vtctld_addr http://${VTCTLD_HOST}:${VTCTLD_WEB_PORT}/ \
 		$DBCONFIG_FLAGS \
-		> $VTDATAROOT/$TABLET_DIR/vttablet.out 2>&1 &
+		>> $VTDATAROOT/$TABLET_DIR/$process.out 2>&1 &
 
 	pid=$!
 	if ps -p $pid >/dev/null 2>&1; then
@@ -65,6 +73,7 @@ status () {
 process_instance () {
 	local UNIQUE_ID=$1
 	local h
+	local u
 
 	if [ -z "$UNIQUE_ID" ]; then
 		usage $process 1
@@ -72,14 +81,21 @@ process_instance () {
 
 	# find the instance's hostname and see if it's mine
 	h=$(hostname_from_id $UNIQUE_ID)
-	if [ -z "$h" ]; then
+	[ -z "$h" ] && \
 		msg_fatal "Could not find a hostname from id $UNIQUE_ID"
-	fi
+
+	u=$(vttablet_user_from_id $UNIQUE_ID)
+	[ -z "$u" ] && \
+		msg_fatal "Could not find a username from id $UNIQUE_ID"
+
+	# set the environment correctly from the hostname/process
+	set_environment_from_parameters $h $process $UNIQUE_ID
+
 	if [ "$h" != "$(hostname)" ]; then
-		copy_files $h
+		copy_files $h $u
 
 		msg_verbose "Running $h:$myname $UNIQUE_ID"
-		ssh $h ./$myname $ACTION $UNIQUE_ID
+		ssh $h sudo -E -u $u $VTDEPLOY/$myname $ACTION $UNIQUE_ID
 		return $?
 		# should never get here!
 	fi
@@ -119,18 +135,6 @@ process_instance () {
 	if [ "$ADD_HEARTBEAT_CONFIG" = yes ]; then
 		enable_heartbeat="-heartbeat_enable"
 	fi
-
-	if [ "$USER" != "$VTTABLET_USER" ]; then
-		sudo_exec="sudo -E -u $VTTABLET_USER"
-		sudo_kill="sudo -E -u $VTTABLET_USER kill"
-	else
-		sudo_exec=
-		sudo_kill=kill
-	fi
-
-	for dir in ${VTDATAROOT}/tmp ${VTDATAROOT}/backups; do
-		sudo_mkdir_if_missing $dir
-	done
 
 	# now do the real work
 	case $ACTION in

@@ -7,15 +7,22 @@ test -r $mydir/common_routines.sh || {
         exit 1
 }
 source $mydir/common_routines.sh
+process=vtgate
 
 # Start vtgate.
 start () {
 	local pid
 
-	msg_info "Starting vtgate..."
+	# don't run if already running
+	if check_status $process $PIDFILE; then
+		msg_fatal "$process for $ALIAS is already running, not starting"
+	fi
 
-	$sudo_exec \
-	$VTROOT/bin/vtgate \
+	mkdir_if_missing ${VTDATAROOT}/tmp
+
+	msg_info "Starting $process..."
+
+	$VTROOT/bin/$process \
                 $TOPOLOGY_FLAGS \
                 -log_dir $VTDATAROOT/tmp \
 		-port $WEB_PORT \
@@ -29,36 +36,95 @@ start () {
 		-gateway_implementation discoverygateway \
 		-service_map grpc-vtgateservice \
 		-pid_file $PIDFILE \
-	> $VTDATAROOT/tmp/vtgate.out 2>&1 &
+	> $VTDATAROOT/tmp/$process.out 2>&1 &
 
 	pid=$!
 	if ps -p $pid >/dev/null 2>&1; then
-		msg_info "vtgate started with pid $pid and listening on port $MYSQL_PORT"
-		msg_info "Access vtgate at http://$HOSTNAME:$WEB_PORT/debug/status"
-		msg_info "Note: vtgate writes logs under $VTDATAROOT/tmp."
+		msg_info "$process started with pid $pid and listening on port $MYSQL_PORT"
+		msg_info "Access $process at http://$HOSTNAME:$WEB_PORT/debug/status"
+		msg_info "Note: $process writes logs under $VTDATAROOT/tmp."
 		disown -a
 	else
-		msg_fatal "vtgate did not start correctly! Check logs."
+		msg_fatal "$process did not start correctly! Check logs."
 	fi
 }
 
 status () {
-	check_status vtgate $PIDFILE
+	check_status $process $PIDFILE
 }
 
 # stop vtgate
 stop () {
 	local pid
 
-        echo "Stopping vtgate $UNIQUE_ID ($myhostname) for cell $CELL..."
+        echo "Stopping $process $UNIQUE_ID ($myhostname) for cell $CELL..."
         if test -e $PIDFILE; then
                 pid=`cat $PIDFILE`
-                $sudo_kill $pid
+                kill $pid
 
                 while ps -p $pid > /dev/null; do sleep 1; done
         else
-                msg_info "No pid file at $myhostname:$PIDFILE so assuming vtgate not running"
+                msg_info "No pid file at $myhostname:$PIDFILE so assuming $process not running"
         fi
+}
+
+process_instance () {
+        local UNIQUE_ID=$1
+        local h
+        local u
+
+        if [ -z "$UNIQUE_ID" ]; then
+                usage $process 1
+        fi
+
+        # find the instance's hostname and see if it's mine
+        h=$(vtgate_hostname_from_id $UNIQUE_ID)
+	[ -z "$h" ] && \
+		msg_fatal "Could not find a hostname from id $UNIQUE_ID"
+
+	u=$(vtgate_user_from_id $UNIQUE_ID)
+	[ -z "$u" ] && \
+		msg_fatal "Could not find a username from id $UNIQUE_ID"
+
+	# set the environment correctly from the hostname/process
+	set_environment_from_parameters $h $process $UNIQUE_ID
+
+	if [ "$h" != "$(hostname)" ]; then
+		copy_files $h $u
+
+		# pass on verbose option if set
+		if [ -n "$verbose" ]; then
+			opt_verbose=-v
+		else
+			opt_verbose=
+		fi
+
+		msg_verbose "Running $h:$myname $UNIQUE_ID"
+		ssh $h sudo -E -u $u $VTDEPLOY/$myname $opt_v $ACTION $UNIQUE_ID
+
+		return $?
+		# should never get here!
+	fi
+
+	msg_verbose "Running $myname $UNIQUE_ID locally"
+
+	# msg_info "Running $myname $UNIQUE_ID locally"
+
+	MYSQL_PORT=$(vtgate_mysql_port_from_id $UNIQUE_ID)
+	WEB_PORT=$(vtgate_web_port_from_id $UNIQUE_ID)
+	GRPC_PORT=$(vtgate_grpc_port_from_id $UNIQUE_ID)
+	VITESS_USER=$(vtgate_user_from_id $UNIQUE_ID)
+	CELL=$(vtgate_cell_from_id $UNIQUE_ID)
+	TABLET_TYPES_TO_WAIT=$(vtgate_tablet_types_to_wait_from_id $UNIQUE_ID)
+	PIDFILE=$VTDATAROOT/tmp/$process.pid
+
+	# now do the real work
+        case $ACTION in
+        start)          start;;
+        stop)           stop;;
+        status)         status;;
+        restart)        stop && start;;
+        esac
 }
 
 ###
@@ -69,70 +135,23 @@ verbose=
 while getopts vh flag; do
 	case $flag in
 	v) verbose=1;;
-	h) usage vtgate 0;;
+	h) usage $process 0;;
 	esac
 done
 shift $(($OPTIND - 1))
 
-if [ $# != 2 ]; then
-	usage vtgate 1
+if [ $# -lt 2 ]; then
+	usage $process 1
 fi
 
 ACTION=$1
 check_action "$ACTION" ||\
-	usage vtgate 1
+        usage $process 1
 
-UNIQUE_ID=$2
-if [ -z "$UNIQUE_ID" ]; then
-	usage vtgate 1
-fi
+shift
 
-# find the instance's hostname and see if it's mine
-h=$(vtgate_hostname_from_id $UNIQUE_ID)
-if [ -z "$h" ]; then
-	msg_fatal "Can not find hostname for id $UNIQUE_ID"
-fi
-
-if [ "$h" != "$(hostname)" ]; then
-	copy_files $h
-
-	# pass on verbose option if set
-	if [ -n "$verbose" ]; then
-		opt_verbose=-v
-	else
-		opt_verbose=
-	fi
-
-	msg_verbose "Running $h:$myname $UNIQUE_ID"
-	ssh $h ./$myname $opt_verbose $ACTION $UNIQUE_ID
-	exit $?
-	# should never get here!
-fi
-
-# msg_info "Running $myname $UNIQUE_ID locally"
-
-mkdir -p ${VTDATAROOT}/tmp
-
-MYSQL_PORT=$(vtgate_mysql_port_from_id $UNIQUE_ID)
-WEB_PORT=$(vtgate_web_port_from_id $UNIQUE_ID)
-GRPC_PORT=$(vtgate_grpc_port_from_id $UNIQUE_ID)
-VITESS_USER=$(vtgate_user_from_id $UNIQUE_ID)
-CELL=$(vtgate_cell_from_id $UNIQUE_ID)
-TABLET_TYPES_TO_WAIT=$(vtgate_tablet_types_to_wait_from_id $UNIQUE_ID)
-PIDFILE=$VTDATAROOT/tmp/vtgate.pid
-
-if [ "$USER" != "$VITESS_USER" ]; then
-	sudo_exec="sudo -E -u $VITESS_USER"
-	sudo_kill="sudo -E -u $VITESS_USER kill"
-else
-	sudo_exec=
-	sudo_kill=kill
-fi
-
-# now do the real work
-case $ACTION in
-start)          start;;
-stop)           stop;;
-status)         status;;
-restart)        stop && start;;
-esac
+# iterate over each instance
+while [ $# != 0 ]; do
+        process_instance $1
+        shift
+done

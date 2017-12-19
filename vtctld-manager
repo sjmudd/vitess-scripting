@@ -10,17 +10,20 @@ test -r $mydir/common_routines.sh || {
 	exit 1
 }
 source $mydir/common_routines.sh
+process=vtctld
 
 start () {
-	echo "Starting vtctld..."
+	echo "Starting $process..."
 
-	mkdir -p $VTDATAROOT/backups
-	mkdir -p $VTDATAROOT/tmp
+	mkdir_if_missing $VTDATAROOT/backups $VTDATAROOT/tmp
 
-	$sudo_exec \
-	${VTROOT}/bin/vtctld \
+	# don't run if already running
+	if check_status $process $PIDFILE; then
+		msg_fatal "$process is already running, not starting"
+	fi
+
+	${VTROOT}/bin/$process \
 		${TOPOLOGY_FLAGS} \
-		-alsologtostderr \
 		-cell ${CELL} \
 		-web_dir ${VTTOP}/web/vtctld \
 		-web_dir2 ${VTTOP}/web/vtctld2/app \
@@ -33,21 +36,21 @@ start () {
 		-port ${WEB_PORT} \
 		-grpc_port ${GRPC_PORT} \
 		-pid_file $PIDFILE \
-		>> ${VTDATAROOT}/tmp/vtctld.out 2>&1 &
+		>> ${VTDATAROOT}/tmp/$process.out 2>&1 &
 
 	disown -a
 
-	msg_info "Access vtctld web UI at http://${HOSTNAME}:${WEB_PORT}"
+	msg_info "Access $process web UI at http://${HOSTNAME}:${WEB_PORT}"
 	msg_info "Send commands with: vtctlclient -server ${HOSTNAME}:${GRPC_PORT} ..."
-	msg_info "Note: vtctld writes logs under $VTDATAROOT/tmp."
+	msg_info "Note: $process writes logs under $VTDATAROOT/tmp."
 }
 
 stop () {
-	stop_by_pidfile vtctld $PIDFILE
+	stop_by_pidfile $process $PIDFILE
 }
 
 status () {
-        check_status vtctld $PIDFILE
+        check_status $process $PIDFILE
 }
 
 ###
@@ -58,22 +61,22 @@ verbose=
 while getopts vh flag; do
 	case $flag in
 	v) verbose=1;;
-	h) usage vtctld 0;;
+	h) usage $process 0;;
 	esac
 done
 shift $(($OPTIND - 1))
 
 if [ $# != 2 ]; then
-	usage vtctld 1
+	usage $process 1
 fi
 
 ACTION=$1
 check_action "$ACTION" ||\
-	usage vtctld 1
+	usage $process 1
 
 UNIQUE_ID=$2
 if [ -z "$UNIQUE_ID" ]; then
-	usage vtctld 1
+	usage $process 1
 fi
 
 # find the instance's hostname and see if it's mine
@@ -81,35 +84,30 @@ h=$(vtctld_hostname_from_id $UNIQUE_ID)
 if [ -z "$h" ]; then
 	msg_fatal "No could not find a hostname from id $UNIQUE_ID"
 fi
+
+u=$(vtctld_user_from_id $UNIQUE_ID)
+[ -z "$u" ] && \
+	msg_fatal "Could not find a username from id $UNIQUE_ID"
+
+# set the environment correctly from the hostname/process
+set_environment_from_parameters $h $process $UNIQUE_ID
+
 if [ "$h" != "$(hostname)" ]; then
-	copy_files $h
+	copy_files $h $u
 
 	msg_verbose "Running $h:$myname $UNIQUE_ID"
-	ssh $h ./$myname $ACTION $UNIQUE_ID ||\
-		msg_fatal "Failed to run $h:$myname"
-
+	ssh $h sudo -E -u $u $VTDEPLOY/$myname $ACTION $UNIQUE_ID
 	exit $?
 	# should never get here!
 fi
 
 msg_verbose "Running $myname $UNIQUE_ID locally"
 
-mkdir -p ${VTDATAROOT}/tmp
-mkdir -p ${VTDATAROOT}/backups
-
 WEB_PORT=$(vtctld_web_port_from_id $UNIQUE_ID)
 GRPC_PORT=$(vtctld_grpc_port_from_id $UNIQUE_ID)
 CELL=$(vtctld_cell_from_id $UNIQUE_ID)
 VITESS_USER=$(vtctld_user_from_id $UNIQUE_ID)
-PIDFILE=$VTDATAROOT/tmp/vtctld.pid
-
-if [ "$USER" != "$VITESS_USER" ]; then
-	sudo_exec="sudo -E -u $VITESS_USER"
-	sudo_kill="sudo -E -u $VITESS_USER kill"
-else
-	sudo_exec=
-	sudo_kill=kill
-fi
+PIDFILE=$VTDATAROOT/tmp/$process.pid
 
 # now do the real work
 case $ACTION in
